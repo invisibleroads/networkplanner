@@ -1,7 +1,10 @@
 'Network model using a modified kruskal algorithm'
 # Import system modules
-import itertools
 import os
+import functools
+import numpy as np
+from pysal.cg import Arc_KDTree
+from scipy.spatial import KDTree
 # Import custom modules
 from np.lib import network, store, geometry_store, variable_store
 
@@ -12,6 +15,15 @@ class MinimumNodeCountPerSubnetwork(variable_store.Variable):
     option = 'minimum node count per subnetwork'
     c = dict(parse=int)
     default = 2
+    units = 'nodes'
+
+
+class MaximumNearestNeighborCount(variable_store.Variable):
+
+    section = 'algorithm'
+    option = 'maximum nearest neighbor count'
+    c = dict(parse=int)
+    default = 5
     units = 'nodes'
 
 
@@ -27,6 +39,7 @@ class VariableStore(variable_store.VariableStore):
 
     variableClasses = [
         MinimumNodeCountPerSubnetwork,
+        MaximumNearestNeighborCount,
         ExistingNetworks,
     ]
 
@@ -77,9 +90,23 @@ class VariableStore(variable_store.VariableStore):
             net.subnets.append(network.Subnet([segmentFactory.getSegment(transform_point(c1[0], c1[1]), transform_point(c2[0], c2[1]), is_existing=True) for c1, c2 in networkCoordinatePairs]))
             # Add candidate segments that connect each node to its projection on the existing network
             segments.extend(net.project(networkNodes))
-        # Add candidate segments using combinations of real nodes
-        for node1, node2 in itertools.combinations(networkNodes, 2):
-            segments.append(segmentFactory.getSegment(node1.getCoordinates(), node2.getCoordinates()))
+        # Prepare matrix where the rows are nodes and the columns are node coordinates
+        networkNodeMatrix = np.array([node.getCoordinates() for node in networkNodes])
+        # Define get_nearestNeighbors()
+        if computeDistance == network.computeEuclideanDistance:
+            kdTree = KDTree(networkNodeMatrix)
+        else:
+            earthRadiusInMeters = 6371010
+            kdTree = Arc_KDTree(networkNodeMatrix, radius=earthRadiusInMeters)
+        get_nearestNeighbors = functools.partial(kdTree.query, k=self.get(MaximumNearestNeighborCount))
+        # For each node,
+        for node1 in networkNodes:
+            # Get its nearest neighbors
+            nodeIndices = get_nearestNeighbors(node1.getCoordinates())[1]
+            # Add candidate segments from the node to each of its nearest neighbors
+            for node2Coordinates in networkNodeMatrix[nodeIndices]:
+                # Let getSegment() compute segment weight in case we want to customize how we weight each segment
+                segments.append(segmentFactory.getSegment(node1.getCoordinates(), tuple(node2Coordinates)))
         # Return
         return segments, net 
 
